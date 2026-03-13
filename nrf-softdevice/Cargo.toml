@@ -26,6 +26,7 @@ s113 = ["nrf-softdevice-s113"]
 s122 = ["nrf-softdevice-s122"]
 s132 = ["nrf-softdevice-s132"]
 s140 = ["nrf-softdevice-s140"]
+s340 = ["nrf-softdevice-s340"]
 
 ble-rssi = []
 ble-peripheral = []
@@ -75,6 +76,7 @@ nrf-softdevice-s113 = { version = "0.1.1", path = "../nrf-softdevice-s113", opti
 nrf-softdevice-s122 = { version = "0.1.1", path = "../nrf-softdevice-s122", optional = true }
 nrf-softdevice-s132 = { version = "0.1.1", path = "../nrf-softdevice-s132", optional = true }
 nrf-softdevice-s140 = { version = "0.1.1", path = "../nrf-softdevice-s140", optional = true }
+nrf-softdevice-s340 = { version = "0.1.2", path = "../nrf-softdevice-s340", optional = true }
 
 nrf-softdevice-macro = { version = "0.1.0", path = "../nrf-softdevice-macro", optional = true }
 

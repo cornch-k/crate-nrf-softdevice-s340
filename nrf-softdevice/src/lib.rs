@@ -15,9 +15,10 @@ compile_error!("You must activate at least one of the following features: ble-ce
     feature = "s113",
     feature = "s122",
     feature = "s132",
-    feature = "s140"
+    feature = "s140",
+    feature = "s340"
 )))]
-compile_error!("No softdevice feature activated. You must activate exactly one of the following features: s112, s113, s122, s132, s140");
+compile_error!("No softdevice feature activated. You must activate exactly one of the following features: s112, s113, s122, s132, s140, s340");
 
 // I don't know how to do this with less than O(n^2)... :(
 #[cfg(any(
@@ -101,24 +102,25 @@ compile_error!("Multiple chip features activated. You must activate exactly one 
     all(feature = "nrf52833", feature = "s140"),
     all(feature = "nrf52840", feature = "s113"),
     all(feature = "nrf52840", feature = "s140"),
+    all(feature = "nrf52840", feature = "s340"),
 )))]
 compile_error!("The selected chip and softdevice are not compatible.");
 
 #[cfg(all(
     feature = "ble-central",
-    not(any(feature = "s122", feature = "s132", feature = "s140"))
+    not(any(feature = "s122", feature = "s132", feature = "s140", feature = "s340"))
 ))]
 compile_error!("The selected softdevice does not support ble-central.");
 
 #[cfg(all(
     feature = "ble-peripheral",
-    not(any(feature = "s112", feature = "s113", feature = "s132", feature = "s140"))
+    not(any(feature = "s112", feature = "s113", feature = "s132", feature = "s140", feature = "s340"))
 ))]
 compile_error!("The selected softdevice does not support ble-peripheral.");
 
 #[cfg(all(
     feature = "ble-l2cap",
-    not(any(feature = "s113", feature = "s132", feature = "s140"))
+    not(any(feature = "s113", feature = "s132", feature = "s140", feature = "s340"))
 ))]
 compile_error!("The selected softdevice does not support ble-l2cap.");
 
@@ -132,6 +134,8 @@ pub use nrf_softdevice_s122 as raw;
 pub use nrf_softdevice_s132 as raw;
 #[cfg(feature = "s140")]
 pub use nrf_softdevice_s140 as raw;
+#[cfg(feature = "s340")]
+pub use nrf_softdevice_s340 as raw;
 
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;
