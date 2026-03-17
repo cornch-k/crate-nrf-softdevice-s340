@@ -38,6 +38,7 @@ use core::mem;
 #[cfg(any(feature = "ble-gatt-server", feature = "ble-sec"))]
 pub use replies::*;
 
+use crate::util::get_union_field;
 use crate::{raw, RawError, Softdevice};
 
 pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
@@ -51,6 +52,36 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
         raw::BLE_GATTS_EVT_BASE..=raw::BLE_GATTS_EVT_LAST => gatt_server::on_evt(ble_evt),
         #[cfg(feature = "ble-l2cap")]
         raw::BLE_L2CAP_EVT_BASE..=raw::BLE_L2CAP_EVT_LAST => l2cap::on_evt(ble_evt),
+        // Central-only: reply to peripheral-initiated MTU exchange.
+        // Without this, the pending exchange blocks sd_ble_gatts_hvx().
+        #[cfg(not(feature = "ble-gatt-server"))]
+        raw::BLE_GATTS_EVTS_BLE_GATTS_EVT_EXCHANGE_MTU_REQUEST => {
+            let gatts_evt = get_union_field(ble_evt, &(*ble_evt).evt.gatts_evt);
+            let ret = raw::sd_ble_gatts_exchange_mtu_reply(
+                gatts_evt.conn_handle,
+                raw::BLE_GATT_ATT_MTU_DEFAULT as u16,
+            );
+            if let Err(_e) = RawError::convert(ret) {
+                warn!("sd_ble_gatts_exchange_mtu_reply err {:?}", _e);
+            }
+        }
+
+        // Central-only: respond to SYS_ATTR_MISSING so the SoftDevice
+        // can proceed with GATTC HVX delivery.
+        #[cfg(not(feature = "ble-gatt-server"))]
+        raw::BLE_GATTS_EVTS_BLE_GATTS_EVT_SYS_ATTR_MISSING => {
+            let gatts_evt = get_union_field(ble_evt, &(*ble_evt).evt.gatts_evt);
+            let ret = raw::sd_ble_gatts_sys_attr_set(
+                gatts_evt.conn_handle,
+                core::ptr::null(),
+                0,
+                0,
+            );
+            if let Err(_e) = RawError::convert(ret) {
+                warn!("sd_ble_gatts_sys_attr_set err {:?}", _e);
+            }
+        }
+
         _ => {}
     }
 }
