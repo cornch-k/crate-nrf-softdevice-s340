@@ -462,6 +462,17 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
                 state.att_mtu = mtu;
             });
         }
+        // Handle SYS_ATTR_MISSING immediately so central connections
+        // (which have no gatt_server::run() listener) get unblocked.
+        // Also forward to portal for peripheral connections where run() may do extra handling.
+        raw::BLE_GATTS_EVTS_BLE_GATTS_EVT_SYS_ATTR_MISSING => {
+            let conn_handle = gatts_evt.conn_handle;
+            let ret = raw::sd_ble_gatts_sys_attr_set(conn_handle, core::ptr::null(), 0, 0);
+            if let Err(_err) = RawError::convert(ret) {
+                warn!("sd_ble_gatts_sys_attr_set err {:?}", _err);
+            }
+            portal(conn_handle).call(ble_evt);
+        }
         _ => {
             portal(gatts_evt.conn_handle).call(ble_evt);
         }

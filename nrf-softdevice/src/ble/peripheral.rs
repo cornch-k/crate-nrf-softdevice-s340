@@ -304,7 +304,10 @@ pub async fn advertise(
             match (*ble_evt).header.evt_id as u32 {
                 raw::BLE_GAP_EVTS_BLE_GAP_EVT_TIMEOUT => Err(AdvertiseError::Timeout),
                 raw::BLE_GAP_EVTS_BLE_GAP_EVT_ADV_SET_TERMINATED => Err(AdvertiseError::Timeout),
-                e => panic!("unexpected event {}", e),
+                e => {
+                    warn!("unexpected event {}", e);
+                    Err(AdvertiseError::Raw(RawError::Internal))
+                }
             }
         })
         .await;
@@ -379,7 +382,10 @@ where
                 }
                 raw::BLE_GAP_EVTS_BLE_GAP_EVT_TIMEOUT => Err(AdvertiseError::Timeout),
                 raw::BLE_GAP_EVTS_BLE_GAP_EVT_ADV_SET_TERMINATED => Err(AdvertiseError::Timeout),
-                e => panic!("unexpected event {}", e),
+                e => {
+                    warn!("unexpected event {}", e);
+                    Err(AdvertiseError::Raw(RawError::Internal))
+                }
             }
         })
         .await;

@@ -109,7 +109,10 @@ where
                     }
                 }
                 raw::BLE_GAP_EVTS_BLE_GAP_EVT_TIMEOUT => Err(ConnectError::Timeout),
-                e => panic!("unexpected event {}", e),
+                e => {
+                    warn!("connect: unexpected event {}, treating as timeout", e);
+                    Err(ConnectError::Timeout)
+                }
             }
         })
         .await?;

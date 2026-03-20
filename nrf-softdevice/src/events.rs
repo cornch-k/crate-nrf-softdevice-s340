@@ -110,6 +110,8 @@ pub(crate) async fn run_ble() -> ! {
 unsafe extern "C" fn swi2_irq_handler() {
     SWI2_SOC_EVT_WAKER.wake();
     SWI2_BLE_EVT_WAKER.wake();
+    #[cfg(feature = "s340")]
+    crate::ant::event::wake();
 }
 
 /// `nrf528xx_pac` and early versions of `nrf_pac` name the SWI2 interrupt `SWI2_EGU2` instead of `EGU2_SWI2`
@@ -119,4 +121,6 @@ unsafe extern "C" fn swi2_irq_handler() {
 unsafe extern "C" fn old_swi2_irq_handler() {
     SWI2_SOC_EVT_WAKER.wake();
     SWI2_BLE_EVT_WAKER.wake();
+    #[cfg(feature = "s340")]
+    crate::ant::event::wake();
 }

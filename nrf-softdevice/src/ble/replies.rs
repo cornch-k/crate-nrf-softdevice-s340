@@ -145,6 +145,7 @@ impl<const DEFERRED_TYPE: u8> DeferredReply<DEFERRED_TYPE> {
         let res = if let Some(handle) = self.conn.handle() {
             let params = raw::ble_gatts_authorize_params_t {
                 gatt_status: gatt_status.into(),
+                _bitfield_align_1: [],
                 _bitfield_1: raw::ble_gatts_authorize_params_t::new_bitfield_1(u8::from(update)),
                 offset: 0,
                 len: len as u16,

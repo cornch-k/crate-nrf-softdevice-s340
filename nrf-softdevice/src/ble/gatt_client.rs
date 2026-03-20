@@ -142,7 +142,10 @@ pub(crate) async fn discover_service(conn: &Connection, uuid: Uuid) -> Result<ra
                         }
                     }
                 }
-                e => panic!("unexpected event {}", e),
+                e => {
+                    warn!("unexpected event {}", e);
+                    Err(DiscoverError::Raw(RawError::Internal))
+                }
             }
         })
         .await
@@ -183,7 +186,10 @@ async fn discover_characteristics(
                         .unwrap_or_else(|_| panic!("too many gatt chars, increase DiscCharsMax: {:?}", v.len()));
                     Ok(v)
                 }
-                e => panic!("unexpected event {}", e),
+                e => {
+                    warn!("unexpected event {}", e);
+                    Err(DiscoverError::Raw(RawError::Internal))
+                }
             }
         })
         .await
@@ -224,7 +230,10 @@ async fn discover_descriptors(
                         .unwrap_or_else(|_| panic!("too many gatt descs, increase DiscDescsMax: {:?}", v.len()));
                     Ok(v)
                 }
-                e => panic!("unexpected event {}", e),
+                e => {
+                    warn!("unexpected event {}", e);
+                    Err(DiscoverError::Raw(RawError::Internal))
+                }
             }
         })
         .await
@@ -606,7 +615,10 @@ pub(crate) async fn att_mtu_exchange(conn: &Connection, mtu: u16) -> Result<(), 
 
                     Ok(())
                 }
-                e => panic!("unexpected event {}", e),
+                e => {
+                    warn!("unexpected event {}", e);
+                    Err(MtuExchangeError::Raw(RawError::Internal))
+                }
             }
         })
         .await

@@ -27,7 +27,8 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
             }
         }
         raw::BLE_GAP_EVTS_BLE_GAP_EVT_DISCONNECTED => {
-            trace!("on_disconnected conn_handle={:?}", gap_evt.conn_handle);
+            let reason = gap_evt.params.disconnected.reason;
+            warn!("on_disconnected conn_handle={:?} reason={:#x}", gap_evt.conn_handle, reason);
             connection::with_state_by_conn_handle(gap_evt.conn_handle, |state| state.on_disconnected(ble_evt));
         }
         raw::BLE_GAP_EVTS_BLE_GAP_EVT_CONN_PARAM_UPDATE => {
@@ -73,7 +74,7 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
                 raw::BLE_GAP_TIMEOUT_SRC_CONN => central::CONNECT_PORTAL.call(ble_evt),
                 #[cfg(feature = "ble-central")]
                 raw::BLE_GAP_TIMEOUT_SRC_SCAN => central::SCAN_PORTAL.call(ble_evt),
-                x => panic!("unknown timeout src {:?}", x),
+                x => { warn!("unknown timeout src {:?}", x); false }
             };
         }
         #[cfg(feature = "ble-peripheral")]
@@ -119,22 +120,19 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
                 _phy_update.tx_phy
             );
         }
-        #[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]
+        #[cfg(any(feature = "s113", feature = "s132", feature = "s140", feature = "s340"))]
         raw::BLE_GAP_EVTS_BLE_GAP_EVT_DATA_LENGTH_UPDATE_REQUEST => {
-            let _peer_params = gap_evt.params.data_length_update_request.peer_params;
-
-            trace!(
-                "on_data_length_update_request conn_handle={:?} max_rx_octets={:?} max_rx_time_us={:?} max_tx_octets={:?} max_tx_time_us={:?}",
-                gap_evt.conn_handle,
-                _peer_params.max_rx_octets,
-                _peer_params.max_rx_time_us,
-                _peer_params.max_tx_octets,
-                _peer_params.max_tx_time_us,
-            );
-
             let conn_handle = gap_evt.conn_handle;
-            if let Some(mut conn) = Connection::from_handle(conn_handle) {
-                let _ = conn.data_length_update(None);
+            trace!("on_data_length_update_request conn_handle={:?}", conn_handle);
+
+            // Accept with default params (let SoftDevice choose optimal values).
+            let ret = raw::sd_ble_gap_data_length_update(
+                conn_handle,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+            );
+            if let Err(_err) = RawError::convert(ret) {
+                warn!("sd_ble_gap_data_length_update err {:?}", _err);
             }
         }
         #[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]

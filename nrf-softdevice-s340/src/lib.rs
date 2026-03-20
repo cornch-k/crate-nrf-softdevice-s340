@@ -5,5 +5,6 @@
 #![allow(dead_code)]
 
 mod bindings;
+pub mod ant;
 
 pub use bindings::*;

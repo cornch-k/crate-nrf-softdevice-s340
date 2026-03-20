@@ -330,7 +330,20 @@ impl Softdevice {
     /// version allows the application to provide a callback to receive SoC events
     /// from the softdevice (other than flash events which are handled by [`Flash`](crate::flash::Flash)).
     pub async fn run_with_callback<F: FnMut(SocEvent)>(&self, f: F) -> ! {
-        embassy_futures::join::join(self.run_ble(), crate::events::run_soc(f)).await;
+        #[cfg(feature = "s340")]
+        {
+            embassy_futures::join::join3(
+                self.run_ble(),
+                crate::events::run_soc(f),
+                crate::ant::event::run_ant(|evt| {
+                    crate::ant::dispatch_event(evt);
+                }),
+            ).await;
+        }
+        #[cfg(not(feature = "s340"))]
+        {
+            embassy_futures::join::join(self.run_ble(), crate::events::run_soc(f)).await;
+        }
         // Should never get here
         loop {}
     }

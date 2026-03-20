@@ -150,6 +150,8 @@ pub use flash::*;
 mod raw_error;
 pub use raw_error::*;
 pub mod ble;
+#[cfg(feature = "s340")]
+pub mod ant;
 mod softdevice;
 pub use softdevice::*;
 

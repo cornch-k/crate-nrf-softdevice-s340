@@ -41,6 +41,7 @@ impl AttributeMetadata {
         raw::ble_gatts_attr_md_t {
             read_perm: self.read.into_raw(),
             write_perm: self.write.into_raw(),
+            _bitfield_align_1: [],
             _bitfield_1: raw::ble_gatts_attr_md_t::new_bitfield_1(
                 self.variable_len.into(),
                 vloc,
@@ -193,6 +194,7 @@ impl Properties {
     pub(crate) fn into_raw(self) -> (raw::ble_gatt_char_props_t, raw::ble_gatt_char_ext_props_t) {
         (
             raw::ble_gatt_char_props_t {
+                _bitfield_align_1: [],
                 _bitfield_1: raw::ble_gatt_char_props_t::new_bitfield_1(
                     self.broadcast.into(),
                     self.read.into(),
@@ -204,6 +206,7 @@ impl Properties {
                 ),
             },
             raw::ble_gatt_char_ext_props_t {
+                _bitfield_align_1: [],
                 _bitfield_1: raw::ble_gatt_char_ext_props_t::new_bitfield_1(
                     self.queued_write.into(),
                     self.write_user_description.into(),
