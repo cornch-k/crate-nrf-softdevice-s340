@@ -37,7 +37,7 @@ impl Default for AntChannelConfig {
 
 /// A configured ANT channel.
 pub struct AntChannel {
-    num: u8,
+    pub num: u8,
 }
 
 impl AntChannel {
@@ -114,6 +114,22 @@ impl AntChannel {
     pub fn broadcast(&self, data: &mut [u8; 8]) -> Result<(), RawError> {
         let ret = unsafe {
             raw::ant::data::sd_ant_broadcast_message_tx(self.num, 8, data.as_mut_ptr())
+        };
+        RawError::convert(ret)
+    }
+
+    /// Set search waveform (수신 윈도우 주기). 97=Fast, 316=Default.
+    pub fn set_search_waveform(&self, waveform: u16) -> Result<(), RawError> {
+        let ret = unsafe {
+            raw::ant::channel::sd_ant_search_waveform_set(self.num, waveform)
+        };
+        RawError::convert(ret)
+    }
+
+    /// Send acknowledged data (8 bytes). Slave → Master 전송 시 사용.
+    pub fn acknowledge(&self, data: &mut [u8; 8]) -> Result<(), RawError> {
+        let ret = unsafe {
+            raw::ant::data::sd_ant_acknowledge_message_tx(self.num, 8, data.as_mut_ptr())
         };
         RawError::convert(ret)
     }
