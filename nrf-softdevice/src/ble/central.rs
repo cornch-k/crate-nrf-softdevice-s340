@@ -243,6 +243,21 @@ where
     Ok(res)
 }
 
+/// Safe 스캔: 콜백에 파싱된 `(&[u8], Address, i8)` 전달.
+/// `data`는 AD 바이트 슬라이스, `addr`는 피어 주소, `rssi`는 신호 강도.
+pub async fn scan_safe<'a, F, R>(_sd: &Softdevice, config: &ScanConfig<'a>, mut f: F) -> Result<R, ScanError>
+where
+    F: FnMut(&[u8], Address, i8) -> Option<R>,
+{
+    scan(_sd, config, |report| {
+        let data = unsafe {
+            core::slice::from_raw_parts(report.data.p_data, report.data.len as usize)
+        };
+        let addr = Address::from_raw(report.peer_addr);
+        f(data, addr, report.rssi)
+    }).await
+}
+
 #[derive(Copy, Clone)]
 pub struct ScanConfig<'a> {
     /// Whitelist of addresses to scan. If None, all advertisements

@@ -88,6 +88,50 @@ fn cfg_set(id: u32, cfg: &raw::ble_cfg_t) {
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// System OFF 진입. 이 함수는 리턴하지 않음.
+///
+/// SoftDevice를 통해 POWER->SYSTEMOFF 레지스터를 설정.
+/// GPIO SENSE가 설정된 핀으로 wake 가능 (시스템 리셋).
+pub fn system_off() -> ! {
+    unsafe { raw::sd_power_system_off(); }
+    loop { cortex_m::asm::wfi(); }
+}
+
+/// BLE GAP Preferred Connection Parameters 설정.
+pub fn set_ppcp(params: &raw::ble_gap_conn_params_t) {
+    let ret = unsafe { raw::sd_ble_gap_ppcp_set(params) };
+    assert!(ret == raw::NRF_SUCCESS, "sd_ble_gap_ppcp_set failed: {}", ret);
+}
+
+/// BLE GAP 연결 파라미터 업데이트 요청.
+pub fn conn_param_update(conn_handle: u16, params: &raw::ble_gap_conn_params_t) -> u32 {
+    unsafe { raw::sd_ble_gap_conn_param_update(conn_handle, params) }
+}
+
+/// POWER->RESETREAS 읽고 클리어. 부팅 직후 호출.
+pub fn reset_reason_take() -> u32 {
+    let mut reason: u32 = 0;
+    unsafe {
+        raw::sd_power_reset_reason_get(&mut reason);
+        raw::sd_power_reset_reason_clr(0xFFFF_FFFF);
+    }
+    reason
+}
+
+/// 읽기 전용 GAP 보안 모드 (no access).
+/// device name 같이 read-only 속성에 사용.
+pub fn sec_mode_no_access() -> raw::ble_gap_conn_sec_mode_t {
+    raw::ble_gap_conn_sec_mode_t {
+        _bitfield_align_1: [],
+        _bitfield_1: raw::__BindgenBitfieldUnit::new([0u8; 1]),
+    }
+}
+
+/// GATTS sys_attrs 읽기. 성공 시 0, 실패 시 에러 코드 반환.
+pub fn raw_sys_attr_get(conn_handle: u16, buf: &mut [u8], len: &mut u16) -> u32 {
+    unsafe { raw::sd_ble_gatts_sys_attr_get(conn_handle, buf.as_mut_ptr(), len, 0) }
+}
 static mut SOFTDEVICE: MaybeUninit<Softdevice> = MaybeUninit::uninit();
 
 impl Softdevice {
