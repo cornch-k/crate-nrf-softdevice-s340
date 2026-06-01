@@ -126,10 +126,64 @@ impl AntChannel {
         RawError::convert(ret)
     }
 
+    /// Set channel search priority (0..=7, default = 0).
+    pub fn set_search_priority(&self, priority: u8) -> Result<(), RawError> {
+        let ret = unsafe {
+            raw::ant::channel::sd_ant_search_channel_priority_set(self.num, priority)
+        };
+        RawError::convert(ret)
+    }
+
+    /// Set active search sharing cycles. 0 = disable.
+    pub fn set_active_search_sharing_cycles(&self, cycles: u8) -> Result<(), RawError> {
+        let ret = unsafe {
+            raw::ant::channel::sd_ant_active_search_sharing_cycles_set(self.num, cycles)
+        };
+        RawError::convert(ret)
+    }
+
+    /// Read the channel coexistence configuration into `buf`. The first byte
+    /// (`buf[0]`) is the radio coexistence behaviour bitfield. Advanced coex
+    /// config is passed as NULL (matching the C-side default usage).
+    pub fn coex_config_get(&self, buf: &mut [u8]) -> Result<(), RawError> {
+        let mut cfg = raw::ANT_BUFFER_PTR {
+            ucBufferSize: buf.len() as u8,
+            pucBuffer: buf.as_mut_ptr(),
+        };
+        let ret = unsafe {
+            raw::ant::config::sd_ant_coex_config_get(self.num, &mut cfg, core::ptr::null_mut())
+        };
+        RawError::convert(ret)
+    }
+
+    /// Write the channel coexistence configuration from `buf`. Advanced coex
+    /// config is passed as NULL (matching the C-side default usage).
+    pub fn coex_config_set(&self, buf: &mut [u8]) -> Result<(), RawError> {
+        let mut cfg = raw::ANT_BUFFER_PTR {
+            ucBufferSize: buf.len() as u8,
+            pucBuffer: buf.as_mut_ptr(),
+        };
+        let ret = unsafe {
+            raw::ant::config::sd_ant_coex_config_set(self.num, &mut cfg, core::ptr::null_mut())
+        };
+        RawError::convert(ret)
+    }
+
     /// Send acknowledged data (8 bytes). Slave → Master 전송 시 사용.
     pub fn acknowledge(&self, data: &mut [u8; 8]) -> Result<(), RawError> {
         let ret = unsafe {
             raw::ant::data::sd_ant_acknowledge_message_tx(self.num, 8, data.as_mut_ptr())
+        };
+        RawError::convert(ret)
+    }
+
+    /// Set channel radio TX output power level.
+    /// C: sd_ant_channel_radio_tx_power_set(channel, tx_power, custom_tx_power).
+    /// LEV `request_assist_level` 등 acknowledged 송신 직전에 라디오 출력을
+    /// 끌어올려 단발 송신의 도달률을 확보하기 위해 사용.
+    pub fn set_radio_tx_power(&self, tx_power: u8, custom_tx_power: u8) -> Result<(), RawError> {
+        let ret = unsafe {
+            raw::ant::config::sd_ant_channel_radio_tx_power_set(self.num, tx_power, custom_tx_power)
         };
         RawError::convert(ret)
     }

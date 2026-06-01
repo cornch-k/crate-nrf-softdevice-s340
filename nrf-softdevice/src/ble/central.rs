@@ -3,11 +3,12 @@
 //! Typically the Central device is the higher-powered device, such as a smartphone or laptop, since scanning is more
 //! power-hungry than advertising.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::{mem, ptr};
 
 use crate::ble::types::*;
 use crate::ble::{Address, Connection, OutOfConnsError};
-use crate::util::{get_union_field, OnDrop, Portal};
+use crate::util::{get_union_field, OnDrop, Portal, SyncUnsafeCell};
 use crate::{raw, RawError, Softdevice};
 
 #[cfg(feature = "ble-gatt-client")]
@@ -178,19 +179,23 @@ where
     // Buffer to store received advertisement data.
     const BUF_LEN: usize = 256;
 
-    // Both of these are intentionally static because Softdevice will,
-    // sometimes, write to the buffer after scan_stop() has been
-    // called, somewhere around evt_get().
-    //
-    // This can result in UB as a use-after-free, given the buffer
-    // has been dropped and the scanning has been stopped.
-    static mut BUF: [u8; BUF_LEN] = [0u8; BUF_LEN];
-    static mut BUF_DATA: raw::ble_data_t = raw::ble_data_t {
-        p_data: unsafe { (&mut *(&raw mut BUF)).as_mut_ptr() },
+    // 스캔 버퍼는 scan_stop() 이후에도 SoftDevice가 evt_get() 경로에서 write할 수 있으므로
+    // 'static 필수. SyncUnsafeCell로 `static mut` 회피 — 첫 호출에서 p_data 와이어링.
+    static BUF: SyncUnsafeCell<[u8; BUF_LEN]> = SyncUnsafeCell::new([0u8; BUF_LEN]);
+    static BUF_DATA: SyncUnsafeCell<raw::ble_data_t> = SyncUnsafeCell::new(raw::ble_data_t {
+        p_data: ptr::null_mut(),
         len: BUF_LEN as u16,
-    };
+    });
+    static BUF_DATA_WIRED: AtomicBool = AtomicBool::new(false);
 
-    let ret = unsafe { raw::sd_ble_gap_scan_start(&scan_params, ptr::addr_of!(BUF_DATA)) };
+    if !BUF_DATA_WIRED.swap(true, Ordering::AcqRel) {
+        // SAFETY: 최초 1회 세팅. BUF_DATA.get()은 'static ptr, BUF.get()도 'static.
+        unsafe {
+            (*BUF_DATA.get()).p_data = (*BUF.get()).as_mut_ptr();
+        }
+    }
+
+    let ret = unsafe { raw::sd_ble_gap_scan_start(&scan_params, BUF_DATA.get() as *const _) };
     match RawError::convert(ret) {
         Ok(()) => {}
         Err(err) => {
@@ -221,7 +226,7 @@ where
                     }
 
                     // Resume scan
-                    let ret = raw::sd_ble_gap_scan_start(ptr::null(), ptr::addr_of!(BUF_DATA));
+                    let ret = raw::sd_ble_gap_scan_start(ptr::null(), BUF_DATA.get() as *const _);
                     match RawError::convert(ret) {
                         Ok(()) => {}
 

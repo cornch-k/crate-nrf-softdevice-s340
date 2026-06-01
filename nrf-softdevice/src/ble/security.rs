@@ -50,26 +50,39 @@ pub trait SecurityHandler {
     /// Display `passkey` to the user for confirmation on the remote device.
     ///
     /// Must be implemented if [`io_capabilities()`][Self::io_capabilities] is one of `DisplayOnly`, `DisplayYesNo`, or `KeyboardDisplay`.
+    ///
+    /// 2026-05-13 fork patch: default 가 `panic!` 이라 `io_capabilities=None` 인
+    /// handler 에서도 일부 peer (mITM 요구 폰 등) 가 passkey 페어링 요구 시 reset 트리거.
+    /// warn log 로 변경 — 라이브러리 차원에서 panic 회피 default. 정식 passkey 페어링은
+    /// 여전히 override 필수.
     fn display_passkey(&self, _passkey: &[u8; 6]) {
-        panic!("SecurityHandler::display_passkey is not implemented");
+        warn!("SecurityHandler::display_passkey called but not implemented (peer requested passkey pairing despite io_capabilities=None?)");
     }
 
     /// Allow the user to enter a passkey displayed on the remote device.
     ///
     /// Must be implemented if [`io_capabilities()`][Self::io_capabilities] is one of `KeyboardOnly` or `KeyboardDisplay`.
+    ///
+    /// 2026-05-13 fork patch: 위 `display_passkey` 와 동일 사유로 panic → warn.
     fn enter_passkey(&self, _reply: PasskeyReply) {
-        panic!("SecurityHandler::enter_passkey is not implemented");
+        warn!("SecurityHandler::enter_passkey called but not implemented");
     }
 
     /// Receive out-of-band authentication data.
     ///
     /// Must be implemented if [`can_recv_out_of_band()`][Self::can_recv_out_of_band] ever returns `true`.
+    ///
+    /// 2026-05-13 fork patch: 위 두 함수와 동일 사유로 panic → warn.
     fn recv_out_of_band(&self, _reply: OutOfBandReply) {
-        panic!("SecurityHandler::recv_out_of_band is not implemented");
+        warn!("SecurityHandler::recv_out_of_band called but not implemented");
     }
 
     /// Called when the [`SecurityMode`] of a [`Connection`] has changed.
     fn on_security_update(&self, _conn: &Connection, _security_mode: SecurityMode) {}
+
+    /// Called when the pairing/authentication procedure failed.
+    /// `auth_status` is the raw `BLE_GAP_SEC_STATUS_*` code (non-success).
+    fn on_auth_failed(&self, _conn: &Connection, _auth_status: u8) {}
 
     /// The connection has been bonded and its encryption keys should now be stored.
     ///

@@ -200,3 +200,18 @@ pub unsafe fn sd_ant_channel_low_priority_rx_search_timeout_set(channel: u8, tim
     );
     ret
 }
+
+/// Set active search sharing cycles (0 = disable, otherwise N×channel period).
+/// SVC 216
+#[inline(always)]
+pub unsafe fn sd_ant_active_search_sharing_cycles_set(channel: u8, cycles: u8) -> u32 {
+    let ret: u32;
+    core::arch::asm!("svc 216",
+        inout("r0") to_asm(channel) => ret,
+        inout("r1") to_asm(cycles) => _,
+        lateout("r2") _,
+        lateout("r3") _,
+        lateout("r12") _,
+    );
+    ret
+}

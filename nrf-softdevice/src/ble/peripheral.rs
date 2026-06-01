@@ -1,6 +1,7 @@
 //! Bluetooth Peripheral operations. Peripheral devices emit advertisements, and optionally accept connections from Central devices.
 
 use core::ptr;
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::ble::*;
 use crate::util::{get_union_field, OnDrop, Portal};
@@ -216,7 +217,8 @@ impl From<RawError> for AdvertiseError {
     }
 }
 
-static mut ADV_HANDLE: u8 = raw::BLE_GAP_ADV_SET_HANDLE_NOT_SET as u8;
+// SoftDevice가 sd_ble_gap_adv_set_configure()에서 값을 write함 — AtomicU8::as_ptr()로 *mut u8 제공.
+static ADV_HANDLE: AtomicU8 = AtomicU8::new(raw::BLE_GAP_ADV_SET_HANDLE_NOT_SET as u8);
 pub(crate) static ADV_PORTAL: Portal<*const raw::ble_evt_t> = Portal::new();
 
 fn start_adv(adv: RawAdvertisement<'_>, config: &Config) -> Result<(), AdvertiseError> {
@@ -256,16 +258,17 @@ fn start_adv(adv: RawAdvertisement<'_>, config: &Config) -> Result<(), Advertise
     };
 
     let ret =
-        unsafe { raw::sd_ble_gap_adv_set_configure(ptr::addr_of!(ADV_HANDLE) as _, &datas as _, &adv_params as _) };
+        unsafe { raw::sd_ble_gap_adv_set_configure(ADV_HANDLE.as_ptr(), &datas as _, &adv_params as _) };
     RawError::convert(ret).map_err(|err| {
         warn!("sd_ble_gap_adv_set_configure err {:?}", err);
         err
     })?;
 
+    let handle = ADV_HANDLE.load(Ordering::Acquire);
     let ret = unsafe {
         raw::sd_ble_gap_tx_power_set(
             raw::BLE_GAP_TX_POWER_ROLES_BLE_GAP_TX_POWER_ROLE_ADV as _,
-            ADV_HANDLE as _,
+            handle as _,
             config.tx_power as i8,
         )
     };
@@ -274,7 +277,7 @@ fn start_adv(adv: RawAdvertisement<'_>, config: &Config) -> Result<(), Advertise
         err
     })?;
 
-    let ret = unsafe { raw::sd_ble_gap_adv_start(ADV_HANDLE, 1u8) };
+    let ret = unsafe { raw::sd_ble_gap_adv_start(handle, 1u8) };
     RawError::convert(ret).map_err(|err| {
         warn!("sd_ble_gap_adv_start err {:?}", err);
         err
@@ -290,7 +293,7 @@ pub async fn advertise(
     config: &Config,
 ) -> Result<(), AdvertiseError> {
     let d = OnDrop::new(|| {
-        let ret = unsafe { raw::sd_ble_gap_adv_stop(ADV_HANDLE) };
+        let ret = unsafe { raw::sd_ble_gap_adv_stop(ADV_HANDLE.load(Ordering::Acquire)) };
         if let Err(_e) = RawError::convert(ret) {
             warn!("sd_ble_gap_adv_stop: {:?}", _e);
         }
@@ -348,7 +351,7 @@ where
     F: FnMut(u16, Role, Address, raw::ble_gap_conn_params_t) -> Result<Connection, OutOfConnsError>,
 {
     let d = OnDrop::new(|| {
-        let ret = unsafe { raw::sd_ble_gap_adv_stop(ADV_HANDLE) };
+        let ret = unsafe { raw::sd_ble_gap_adv_stop(ADV_HANDLE.load(Ordering::Acquire)) };
         if let Err(_e) = RawError::convert(ret) {
             warn!("sd_ble_gap_adv_stop: {:?}", _e);
         }

@@ -3,8 +3,13 @@ use core::sync::atomic::{compiler_fence, AtomicBool, Ordering};
 
 use cortex_m::peripheral::NVIC;
 
+use crate::util::SyncUnsafeCell;
 use crate::Interrupt;
 
+// S340 SDK nrf_nvic.h:89-100 의 __NRF_NVIC_SD_IRQS_0 정합:
+//   POWER_CLOCK, RADIO, RTC0, TIMER0, RNG, ECB, CCM_AAR, TEMP, SWI5
+//   (NVMC 는 IRQ 없는 peripheral — SDK 의 placeholder 라 NVIC mask 무관)
+// 2026-05-13 시도한 SWI1/SWI2/SWI4 추가는 user IRQ 차단 실패 — revert.
 const RESERVED_IRQS: u32 = (1 << (Interrupt::POWER_CLOCK as u8))
     | (1 << (Interrupt::RADIO as u8))
     | (1 << (Interrupt::RTC0 as u8))
@@ -16,7 +21,8 @@ const RESERVED_IRQS: u32 = (1 << (Interrupt::POWER_CLOCK as u8))
     | (1 << (Interrupt::SWI5_EGU5 as u8));
 
 static CS_FLAG: AtomicBool = AtomicBool::new(false);
-static mut CS_MASK: [u32; 2] = [0; 2];
+// CS_MASK는 IRQ-disabled 컨텍스트에서만 접근됨 (raw_critical_section 내부).
+static CS_MASK: SyncUnsafeCell<[u32; 2]> = SyncUnsafeCell::new([0; 2]);
 
 #[inline]
 unsafe fn raw_critical_section<R>(f: impl FnOnce() -> R) -> R {
@@ -55,8 +61,10 @@ unsafe impl critical_section::Impl for CriticalSection {
                 CS_FLAG.store(true, Ordering::Relaxed);
 
                 // Store the state of irqs.
-                CS_MASK[0] = nvic.icer[0].read();
-                CS_MASK[1] = nvic.icer[1].read();
+                // SAFETY: raw_critical_section 내부 (IRQ 비활성). 단일 접근 보장.
+                let mask = &mut *CS_MASK.get();
+                mask[0] = nvic.icer[0].read();
+                mask[1] = nvic.icer[1].read();
 
                 // Disable only not-reserved irqs.
                 nvic.icer[0].write(!RESERVED_IRQS);
@@ -77,8 +85,10 @@ unsafe impl critical_section::Impl for CriticalSection {
             raw_critical_section(|| {
                 CS_FLAG.store(false, Ordering::Relaxed);
                 // restore only non-reserved irqs.
-                nvic.iser[0].write(CS_MASK[0] & !RESERVED_IRQS);
-                nvic.iser[1].write(CS_MASK[1]);
+                // SAFETY: raw_critical_section 내부 (IRQ 비활성).
+                let mask = &*CS_MASK.get();
+                nvic.iser[0].write(mask[0] & !RESERVED_IRQS);
+                nvic.iser[1].write(mask[1]);
             });
         }
     }

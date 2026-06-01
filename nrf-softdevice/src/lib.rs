@@ -152,6 +152,7 @@ pub use raw_error::*;
 pub mod ble;
 #[cfg(feature = "s340")]
 pub mod ant;
+pub mod boot_helpers;
 mod softdevice;
 pub use softdevice::*;
 

@@ -258,7 +258,7 @@ pub enum TxPower {
     Plus6dBm = 6,
     #[cfg(feature = "s140")]
     Plus7dBm = 7,
-    #[cfg(feature = "s140")]
+    #[cfg(any(feature = "s140", feature = "s340"))]
     Plus8dBm = 8,
 }
 

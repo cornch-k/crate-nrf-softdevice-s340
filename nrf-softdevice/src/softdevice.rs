@@ -8,6 +8,83 @@ use cortex_m::peripheral::NVIC;
 use crate::{raw, Interrupt, RawError, SocEvent};
 
 unsafe extern "C" fn fault_handler(id: u32, pc: u32, info: u32) {
+    // 2026-05-13 fork patch: SD-side pc 만으론 user 코드 위치 식별 불가.
+    // hardware exception frame (SP 가 가리키는 [R0,R1,R2,R3,R12,LR,PC,xPSR])
+    // 안의 user PC/LR 도 dump 해서 콘치님이 addr2line 으로 매핑 가능하도록.
+    //
+    // ARM Cortex-M exception entry 시 stack push frame layout (low→high addr):
+    //   [+0]R0 [+4]R1 [+8]R2 [+12]R3 [+16]R12 [+20]LR [+24]PC [+28]xPSR
+    //
+    // fault_handler 가 SD callback chain 안 — SP 가 SD local stack 깊이 가리킴.
+    // user exception frame 은 그 위쪽 (higher address) 어딘가. 첫 32 word dump
+    // 해서 콘치님이 code 영역 (0x31000~0xAFFFF) 안 값 직접 식별.
+    //
+    // 저장 채널: (1) RTT 발사 (cargo run live 시) (2) flash 0xB0000 (RTT 끊김 대비)
+    // NVMC direct write — cortex_m::interrupt::disable 안 함 (SD timing 보호).
+    // SD 가 이미 fault 상태라 NVMC 충돌 위험 낮음.
+    let msp: u32;
+    let psp: u32;
+    unsafe {
+        core::arch::asm!("mrs {}, msp", out(reg) msp, options(nomem, nostack, preserves_flags));
+        core::arch::asm!("mrs {}, psp", out(reg) psp, options(nomem, nostack, preserves_flags));
+    }
+
+    let mut dump = [0u32; 32];
+    for i in 0..32usize {
+        unsafe {
+            dump[i] = core::ptr::read_volatile((msp + (i as u32) * 4) as *const u32);
+        }
+    }
+
+    // ── flash 0xB0000 NVMC direct write ──────────────────────────
+    // Layout: [magic, id, sd_pc, info, msp, psp, dump[0..32]]  총 38 words
+    const PANIC_FLASH_ADDR: u32 = 0xB_0000;
+    const PANIC_FLASH_MAGIC: u32 = 0xDEAD_BEEF;
+    const NVMC_READY: *const u32 = 0x4001_E400 as *const u32;
+    const NVMC_CONFIG: *mut u32 = 0x4001_E504 as *mut u32;
+    const NVMC_ERASEPAGE: *mut u32 = 0x4001_E508 as *mut u32;
+
+    unsafe {
+        while core::ptr::read_volatile(NVMC_READY) == 0 {}
+        core::ptr::write_volatile(NVMC_CONFIG, 2); // EEN
+        while core::ptr::read_volatile(NVMC_READY) == 0 {}
+        core::ptr::write_volatile(NVMC_ERASEPAGE, PANIC_FLASH_ADDR);
+        while core::ptr::read_volatile(NVMC_READY) == 0 {}
+        core::ptr::write_volatile(NVMC_CONFIG, 1); // WEN
+        while core::ptr::read_volatile(NVMC_READY) == 0 {}
+
+        let header: [u32; 6] = [PANIC_FLASH_MAGIC, id, pc, info, msp, psp];
+        for (i, word) in header.iter().enumerate() {
+            let addr = PANIC_FLASH_ADDR + (i as u32) * 4;
+            core::ptr::write_volatile(addr as *mut u32, *word);
+            while core::ptr::read_volatile(NVMC_READY) == 0 {}
+        }
+        for (i, word) in dump.iter().enumerate() {
+            let addr = PANIC_FLASH_ADDR + ((6 + i) as u32) * 4;
+            core::ptr::write_volatile(addr as *mut u32, *word);
+            while core::ptr::read_volatile(NVMC_READY) == 0 {}
+        }
+
+        core::ptr::write_volatile(NVMC_CONFIG, 0); // REN
+        while core::ptr::read_volatile(NVMC_READY) == 0 {}
+    }
+
+    // RTT 발사 — flash write 실패 시 fallback (RTT live 면 dump 직접 받음)
+    defmt::error!(
+        "FAULT_HANDLER | sd_pc=0x{:08x} info=0x{:08x} msp=0x{:08x} psp=0x{:08x} (flash log @ 0xB0000)",
+        pc, info, msp, psp
+    );
+    defmt::error!(
+        "MSP+00..15: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+        dump[0], dump[1], dump[2], dump[3], dump[4], dump[5], dump[6], dump[7],
+        dump[8], dump[9], dump[10], dump[11], dump[12], dump[13], dump[14], dump[15]
+    );
+    defmt::error!(
+        "MSP+16..31: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+        dump[16], dump[17], dump[18], dump[19], dump[20], dump[21], dump[22], dump[23],
+        dump[24], dump[25], dump[26], dump[27], dump[28], dump[29], dump[30], dump[31]
+    );
+
     match (id, info) {
         (raw::NRF_FAULT_ID_SD_ASSERT, _) => panic!(
             "Softdevice assertion failed: an assertion inside the softdevice's code has failed. Most common cause is disabling interrupts for too long. Make sure you're using nrf_softdevice::interrupt::free instead of cortex_m::interrupt::free, which disables non-softdevice interrupts only. PC={:x}",
@@ -70,11 +147,17 @@ pub struct Config {
 const APP_CONN_CFG_TAG: u8 = 1;
 
 fn get_app_ram_base() -> u32 {
-    extern "C" {
-        static mut __sdata: u32;
-    }
-
-    ptr::addr_of!(__sdata) as u32
+    // flip-link 가 cortex-m-rt 의 `_ram_start` 와 우리가 PROVIDE 한 모든
+    // RAM 영역 symbol 을 stack 끝 (= __sdata) 으로 override 하기 때문에 link
+    // symbol 로는 진짜 RAM ORIGIN 을 못 가져옴. 이 fork 는 nrf52840 + S340 +
+    // flip-link 환경 전용이라 등록된 SoftDevice 가 사용하는 RAM 영역 끝 주소를 하드코딩.
+    //
+    // !! memory.x 의 RAM ORIGIN 변경 시 여기도 동기화 필수 !!
+    // 2026-05-19: vs_uuid_count 5 → 9 위해 +0x800 (2048 byte). memory.x 와 동기.
+    // 2026-05-20: APP_MEMACC fault 발생 — 동작 중 SD RAM 침범. +0x1000 추가.
+    // 2026-05-20: +0x1000 도 부족, 동일 fault. +0x4000 은 .bss overflow.
+    // +0x2000 (8KB) 추가하여 0x2000B788.
+    0x2000B788
 }
 
 fn cfg_set(id: u32, cfg: &raw::ble_cfg_t) {
@@ -132,7 +215,10 @@ pub fn sec_mode_no_access() -> raw::ble_gap_conn_sec_mode_t {
 pub fn raw_sys_attr_get(conn_handle: u16, buf: &mut [u8], len: &mut u16) -> u32 {
     unsafe { raw::sd_ble_gatts_sys_attr_get(conn_handle, buf.as_mut_ptr(), len, 0) }
 }
-static mut SOFTDEVICE: MaybeUninit<Softdevice> = MaybeUninit::uninit();
+// `static mut` 회피: SyncUnsafeCell로 래핑. ENABLED AtomicBool이 초기화 완료 여부를 보장.
+use crate::util::SyncUnsafeCell;
+static SOFTDEVICE: SyncUnsafeCell<MaybeUninit<Softdevice>> =
+    SyncUnsafeCell::new(MaybeUninit::uninit());
 
 impl Softdevice {
     /// Enable the softdevice.
@@ -345,8 +431,10 @@ impl Softdevice {
             l2cap_rx_mps,
         };
 
+        // SAFETY: ENABLED가 처음 false→true로 바뀐 이 경로만 여기 진입 가능 (compare_exchange 위).
+        // 다른 경로는 panic 또는 ENABLED 체크로 진입 못함.
         unsafe {
-            let p = (&mut *(&raw mut SOFTDEVICE)).as_mut_ptr();
+            let p = (*SOFTDEVICE.get()).as_mut_ptr();
             p.write(sd);
             &mut *p
         }
@@ -357,7 +445,8 @@ impl Softdevice {
     /// (a call to [`enable`] has returned without error) and no `&mut` references
     /// to the softdevice are active
     pub unsafe fn steal() -> &'static Softdevice {
-        &*(&*(&raw const SOFTDEVICE)).as_ptr()
+        // SAFETY: caller가 enable() 선행 호출을 보장하고 &mut 참조 활성화 상태가 없어야 함.
+        &*(*SOFTDEVICE.get()).as_ptr()
     }
 
     /// Runs the softdevice event handling loop.

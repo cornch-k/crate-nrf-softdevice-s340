@@ -3,7 +3,8 @@
 use heapless::Vec;
 
 use crate::ble::*;
-use crate::util::{get_flexarray, get_union_field, Portal};
+use crate::util::{get_flexarray, get_union_field};
+pub use crate::util::Portal;
 use crate::{raw, RawError};
 
 /// Discovered characteristic
@@ -183,7 +184,7 @@ async fn discover_characteristics(
                     let params = get_union_field(ble_evt, &gattc_evt.params.char_disc_rsp);
                     let v = get_flexarray(ble_evt, &params.chars, params.count as usize);
                     let v = Vec::from_slice(v)
-                        .unwrap_or_else(|_| panic!("too many gatt chars, increase DiscCharsMax: {:?}", v.len()));
+                        .map_err(|_| DiscoverError::ServiceIncomplete)?;
                     Ok(v)
                 }
                 e => {
@@ -227,7 +228,7 @@ async fn discover_descriptors(
                     let params = get_union_field(ble_evt, &gattc_evt.params.desc_disc_rsp);
                     let v = get_flexarray(ble_evt, &params.descs, params.count as usize);
                     let v = Vec::from_slice(v)
-                        .unwrap_or_else(|_| panic!("too many gatt descs, increase DiscDescsMax: {:?}", v.len()));
+                        .map_err(|_| DiscoverError::ServiceIncomplete)?;
                     Ok(v)
                 }
                 e => {
@@ -277,7 +278,7 @@ async fn discover_inner<T: Client>(
                     uuid: Uuid::from_raw(desc.uuid),
                     handle: desc.handle,
                 })
-                .unwrap_or_else(|_| panic!("no size in descriptors"));
+                .map_err(|_| DiscoverError::ServiceIncomplete)?;
         }
     }
 
@@ -307,7 +308,7 @@ pub async fn discover<T: Client>(conn: &Connection) -> Result<T, DiscoverError> 
             Err(DiscoverError::Gatt(GattError::ATTERR_ATTRIBUTE_NOT_FOUND)) => break,
             x => x,
         }?;
-        assert_ne!(chars.len(), 0);
+        if chars.is_empty() { break; }
         for curr in chars {
             if let Some(prev) = prev_char {
                 discover_inner(conn, &mut client, &svc, prev, Some(curr)).await?;
@@ -627,11 +628,49 @@ pub(crate) async fn att_mtu_exchange(conn: &Connection, mtu: u16) -> Result<(), 
 const PORTAL_NEW: Portal<*const raw::ble_evt_t> = Portal::new();
 static PORTALS: [Portal<*const raw::ble_evt_t>; CONNS_MAX] = [PORTAL_NEW; CONNS_MAX];
 static HVX_PORTALS: [Portal<*const raw::ble_evt_t>; CONNS_MAX] = [PORTAL_NEW; CONNS_MAX];
-pub(crate) fn portal(conn_handle: u16) -> &'static Portal<*const raw::ble_evt_t> {
+// `pub` (was `pub(crate)`): eTrimm 측 raw GATTC discovery 가 PRIM_SRVC/CHAR/DESC
+// discover response 를 받기 위해 portal 직접 사용 — see H-2/H-3/H-4.
+pub fn portal(conn_handle: u16) -> &'static Portal<*const raw::ble_evt_t> {
     &PORTALS[conn_handle as usize]
 }
-pub(crate) fn hvx_portal(conn_handle: u16) -> &'static Portal<*const raw::ble_evt_t> {
+// `pub` (was `pub(crate)`): eTrimm side needs raw portal access to
+// dispatch HVX events to multiple GATT clients (ANCS + AMS) on the same
+// connection. See eTrimm-rust-copy's [project_ams_ancs_concurrent_pending].
+pub fn hvx_portal(conn_handle: u16) -> &'static Portal<*const raw::ble_evt_t> {
     &HVX_PORTALS[conn_handle as usize]
+}
+
+/// Raw HVX listener for callers that need to dispatch HVX events to
+/// multiple GATT clients on the same connection (ANCS + AMS).
+/// `dyn FnMut` (not generic) to avoid monomorphization → minimal binary
+/// layout impact vs generic helpers. See eTrimm 2026-05-19 ANT crash incident.
+pub async fn wait_hvx(
+    conn: &Connection,
+    handler: &mut dyn FnMut(&Connection, HvxType, u16, &[u8]),
+) -> DisconnectedError {
+    let handle = match conn.with_state(|state| state.check_connected()) {
+        Ok(h) => h,
+        Err(e) => return e,
+    };
+
+    hvx_portal(handle)
+        .wait_many(|ble_evt| unsafe {
+            let ble_evt = &*ble_evt;
+            if u32::from(ble_evt.header.evt_id) == raw::BLE_GAP_EVTS_BLE_GAP_EVT_DISCONNECTED {
+                return Some(DisconnectedError);
+            }
+            if ble_evt.header.evt_id as u32 == raw::BLE_GATTC_EVTS_BLE_GATTC_EVT_HVX {
+                let gattc_evt = get_union_field(ble_evt, &ble_evt.evt.gattc_evt);
+                let conn = unwrap!(Connection::from_handle(gattc_evt.conn_handle));
+                let params = get_union_field(ble_evt, &gattc_evt.params.hvx);
+                let v = get_flexarray(ble_evt, &params.data, params.len as usize);
+                if let Ok(type_) = params.type_.try_into() {
+                    handler(&conn, type_, params.handle, v);
+                }
+            }
+            None
+        })
+        .await
 }
 
 pub async fn run<'a, F, C>(conn: &Connection, client: &C, mut f: F) -> DisconnectedError
@@ -684,3 +723,4 @@ where
         })
         .await
 }
+

@@ -95,9 +95,13 @@ pub fn get_address(_sd: &Softdevice) -> Address {
     }
 }
 
-pub fn set_address(_sd: &Softdevice, addr: &Address) {
+// 2026-05-13 fork patch: 기존 `set_address` 는 `unwrap!` 로 panic 했음.
+// 광고/스캔/연결 모두 정지된 상태에서만 안전 — 페어링 진행 중 (connection
+// active 상태) 호출 시 SD 가 NRF_ERROR_INVALID_STATE 반환 → 보드 reset.
+// caller 가 결과 처리하도록 Result 반환으로 변경.
+pub fn set_address(_sd: &Softdevice, addr: &Address) -> Result<(), RawError> {
     unsafe {
         let ret = raw::sd_ble_gap_addr_set(addr.as_raw());
-        unwrap!(RawError::convert(ret), "sd_ble_gap_addr_set");
+        RawError::convert(ret)
     }
 }

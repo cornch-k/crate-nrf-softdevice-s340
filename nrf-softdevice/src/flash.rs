@@ -36,6 +36,11 @@ pub struct Flash {
     _private: PhantomData<*mut ()>,
 }
 
+// SAFETY: Flash is a singleton (only one taken via `take`) and SoftDevice flash
+// operations are dispatched to a single async task. Sharing across embassy
+// tasks via a Mutex is safe; the !Sync bound is preserved by the Mutex itself.
+unsafe impl Send for Flash {}
+
 static FLASH_TAKEN: AtomicBool = AtomicBool::new(false);
 
 impl Flash {

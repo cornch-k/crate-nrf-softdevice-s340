@@ -336,6 +336,14 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
                         }
                     });
                 }
+            } else if u32::from(params.auth_status) != raw::BLE_GAP_SEC_STATUS_SUCCESS {
+                if let Some(conn) = Connection::from_handle(gap_evt.conn_handle) {
+                    conn.with_state(|state| {
+                        if let Some(handler) = state.security.handler {
+                            handler.on_auth_failed(&conn, params.auth_status);
+                        }
+                    });
+                }
             }
         }
         #[cfg(feature = "ble-central")]

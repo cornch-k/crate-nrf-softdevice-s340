@@ -11,7 +11,7 @@
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::{ptr, u16};
 
 use crate::ble::*;
@@ -57,13 +57,13 @@ pub(crate) unsafe fn on_evt(ble_evt: *const raw::ble_evt_t) {
         raw::BLE_L2CAP_EVTS_BLE_L2CAP_EVT_CH_SDU_BUF_RELEASED => {
             let params = &l2cap_evt.params.ch_sdu_buf_released;
             let pkt = unwrap!(NonNull::new(params.sdu_buf.p_data));
-            (unwrap!(PACKET_FREE))(pkt)
+            packet_free_call(pkt)
         }
         raw::BLE_L2CAP_EVTS_BLE_L2CAP_EVT_CH_TX => {
             let params = &l2cap_evt.params.tx;
             let pkt = unwrap!(NonNull::new(params.sdu_buf.p_data));
             portal(l2cap_evt.conn_handle).call(ble_evt);
-            (unwrap!(PACKET_FREE))(pkt)
+            packet_free_call(pkt)
         }
         _ => {
             portal(l2cap_evt.conn_handle).call(ble_evt);
@@ -177,7 +177,17 @@ pub struct L2cap<P: Packet> {
 }
 
 static IS_INIT: AtomicBool = AtomicBool::new(false);
-static mut PACKET_FREE: Option<unsafe fn(NonNull<u8>)> = None;
+// fn pointer를 usize로 보관 (0 = 미등록). L2cap::init()이 1회 세팅.
+static PACKET_FREE: AtomicUsize = AtomicUsize::new(0);
+
+#[inline]
+fn packet_free_call(ptr: NonNull<u8>) {
+    let raw = PACKET_FREE.load(Ordering::Acquire);
+    assert!(raw != 0, "PACKET_FREE not initialized");
+    // SAFETY: L2cap::init만 이 값을 세팅하며, 항상 유효한 `unsafe fn(NonNull<u8>)` 만 저장함.
+    let f: unsafe fn(NonNull<u8>) = unsafe { core::mem::transmute(raw) };
+    unsafe { f(ptr) }
+}
 
 impl<P: Packet> L2cap<P> {
     /// Initialize the driver.
@@ -190,12 +200,11 @@ impl<P: Packet> L2cap<P> {
             panic!("L2cap::init() called multiple times.")
         }
 
-        unsafe {
-            PACKET_FREE = Some(|ptr| {
-                P::from_raw_parts(ptr, 0);
-                // create Packet from pointer, will be freed on drop
-            })
-        }
+        let f: unsafe fn(NonNull<u8>) = |ptr| {
+            // SAFETY: caller가 length=0으로 packet을 빌드한 뒤 drop → Packet::drop이 메모리 해제.
+            unsafe { P::from_raw_parts(ptr, 0) };
+        };
+        PACKET_FREE.store(f as usize, Ordering::Release);
 
         Self { _private: PhantomData }
     }

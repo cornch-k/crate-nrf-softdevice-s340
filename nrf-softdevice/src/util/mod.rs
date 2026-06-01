@@ -6,6 +6,8 @@ mod drop_bomb;
 pub use drop_bomb::*;
 mod on_drop;
 pub use on_drop::*;
+mod sync_cell;
+pub use sync_cell::*;
 
 use crate::raw;
 

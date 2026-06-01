@@ -182,7 +182,16 @@ where
 
             // If evt_id is not BLE_GAP_EVTS_BLE_GAP_EVT_DISCONNECTED, then it must be a GATTS event
             let gatts_evt = get_union_field(ble_evt, &ble_evt.evt.gatts_evt);
-            let conn = unwrap!(Connection::from_handle(gatts_evt.conn_handle));
+            // 2026-05-13 fork patch: 페어링 직후 service discovery / CCCD write 시
+            // GATTS event burst. SD 가 conn teardown 중인 race window 에서 from_handle
+            // None 반환 → 기존 `unwrap!` 은 panic. 해당 event 만 skip 하고 wait 지속.
+            let conn = match Connection::from_handle(gatts_evt.conn_handle) {
+                Some(c) => c,
+                None => {
+                    warn!("gatts: dispatch from_handle None (conn torn down) — skipping evt");
+                    return None;
+                }
+            };
             let evt = match ble_evt.header.evt_id as u32 {
                 raw::BLE_GATTS_EVTS_BLE_GATTS_EVT_SYS_ATTR_MISSING => {
                     let _params = get_union_field(ble_evt, &gatts_evt.params.sys_attr_missing);
@@ -391,6 +400,42 @@ pub fn indicate_value(conn: &Connection, handle: u16, val: &[u8]) -> Result<(), 
     let ret = unsafe { raw::sd_ble_gatts_hvx(conn_handle, &params) };
     RawError::convert(ret)?;
 
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ServiceChangedError {
+    Disconnected,
+    Raw(RawError),
+}
+
+impl From<RawError> for ServiceChangedError {
+    fn from(err: RawError) -> Self {
+        Self::Raw(err)
+    }
+}
+
+impl From<DisconnectedError> for ServiceChangedError {
+    fn from(_: DisconnectedError) -> Self {
+        Self::Disconnected
+    }
+}
+
+/// Send a Service Changed indication to peer.
+/// Forces peer (phone) to invalidate GATT cache and re-discover services +
+/// re-write CCCD on next connection. Useful for iOS reconnection subscription issues.
+///
+/// `start_handle`..=`end_handle` range should cover services whose subscription state
+/// the peer needs to re-establish. Use 0x0001..=0xFFFF for full range.
+pub fn service_changed(
+    conn: &Connection,
+    start_handle: u16,
+    end_handle: u16,
+) -> Result<(), ServiceChangedError> {
+    let conn_handle = conn.with_state(|state| state.check_connected())?;
+    let ret = unsafe { raw::sd_ble_gatts_service_changed(conn_handle, start_handle, end_handle) };
+    RawError::convert(ret)?;
     Ok(())
 }
 

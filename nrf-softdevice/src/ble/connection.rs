@@ -8,8 +8,8 @@ use super::{HciStatus, PhySet};
 use crate::ble::gap::default_security_params;
 #[cfg(feature = "ble-sec")]
 use crate::ble::security::SecurityHandler;
-use crate::ble::types::{Address, AddressType, Role, SecurityMode};
-use crate::util::get_union_field;
+use crate::ble::types::{Address, AddressType, Role, SecurityMode, TxPower};
+use crate::util::{get_union_field, SyncUnsafeCell};
 use crate::{raw, RawError};
 
 #[cfg(any(feature = "s113", feature = "s132", feature = "s140"))]
@@ -327,7 +327,14 @@ impl ConnectionState {
         if ret == raw::NRF_ERROR_INVALID_STATE {
             return Err(DisconnectedError);
         }
-        unwrap!(RawError::convert(ret), "sd_ble_gap_disconnect");
+        // 2026-05-13 fork patch: 기존 `unwrap!` 은 페어링 협상 race window 에서
+        // SD 가 다른 RawError (BUSY, NOT_FOUND 등) 반환 시 panic 트리거. caller 가
+        // 이미 DisconnectedError 처리 path 보유 — 다른 RawError 도 warn 후
+        // DisconnectedError 로 변환해 graceful 처리.
+        if let Err(_e) = RawError::convert(ret) {
+            warn!("sd_ble_gap_disconnect err {:?} — treating as disconnected", _e);
+            return Err(DisconnectedError);
+        }
 
         self.disconnecting = true;
         Ok(())
@@ -344,8 +351,13 @@ impl ConnectionState {
 
         #[cfg(all(feature = "ble-gatt-server", feature = "ble-sec"))]
         if let Some(handler) = self.security.handler {
-            let conn = unwrap!(Connection::from_handle(conn_handle), "bug: conn_handle has no index");
-            handler.save_sys_attrs(&conn);
+            // 2026-05-13 fork patch: 페어링 협상 중 disconnect → on_disconnected
+            // 호출 시 conn_handle 으로 Connection 못 찾는 race. save_sys_attrs 자체가
+            // best-effort (bonded peer 없으면 save 의미 없음) — None 이면 skip.
+            match Connection::from_handle(conn_handle) {
+                Some(conn) => handler.save_sys_attrs(&conn),
+                None => warn!("on_disconnected: from_handle None — save_sys_attrs skipped"),
+            }
         }
 
         ibh.set(None);
@@ -426,7 +438,12 @@ impl Drop for Connection {
                     trace!("conn {:?}: dropped, disconnecting", self.index);
                     // We still leave conn_handle set, because the connection is
                     // not really disconnected until we get GAP_DISCONNECTED event.
-                    unwrap!(state.disconnect());
+                    // 2026-05-13 fork patch: Drop 안에서 panic 은 double-panic 으로
+                    // abort 트리거. state.disconnect() 가 페어링 race 중 fail 가능 —
+                    // 이미 disconnect 진행 중이면 정상 path 이므로 trace 만.
+                    if let Err(_) = state.disconnect() {
+                        trace!("conn {:?}: drop disconnect failed (likely already disconnecting)", self.index);
+                    }
                 } else {
                     trace!("conn {:?}: dropped, already disconnected", self.index);
                 }
@@ -591,6 +608,23 @@ impl Connection {
             return Err(err.into());
         }
 
+        Ok(())
+    }
+
+    /// Set this connection's TX power (CONN role).
+    /// Mirrors C `sd_ble_gap_tx_power_set(BLE_GAP_TX_POWER_ROLE_CONN, handle, dbm)`.
+    pub fn set_tx_power(&self, power: TxPower) -> Result<(), DisconnectedError> {
+        let conn_handle = self.with_state(|state| state.check_connected())?;
+        let ret = unsafe {
+            raw::sd_ble_gap_tx_power_set(
+                raw::BLE_GAP_TX_POWER_ROLES_BLE_GAP_TX_POWER_ROLE_CONN as _,
+                conn_handle,
+                power as i8,
+            )
+        };
+        if let Err(err) = RawError::convert(ret) {
+            warn!("sd_ble_gap_tx_power_set(CONN) err {:?}", err);
+        }
         Ok(())
     }
 
@@ -808,16 +842,16 @@ impl Iterator for ConnectionIter {
     fn next(&mut self) -> Option<Self::Item> {
         let n = usize::from(self.0);
         if n < CONNS_MAX {
-            unsafe {
-                for (i, s) in STATES[n..].iter().enumerate() {
-                    let state = &mut *s.get();
-                    if state.conn_handle.is_connected() {
-                        let index = (n + i) as u8;
-                        state.refcount =
-                            unwrap!(state.refcount.checked_add(1), "Too many references to same connection");
-                        self.0 = index + 1;
-                        return Some(Connection { index });
-                    }
+            // SAFETY: Cortex-M4 single-core 단일 스레드 직렬 접근.
+            let states = unsafe { &*STATES.get() };
+            for (i, s) in states[n..].iter().enumerate() {
+                let state = unsafe { &mut *s.get() };
+                if state.conn_handle.is_connected() {
+                    let index = (n + i) as u8;
+                    state.refcount =
+                        unwrap!(state.refcount.checked_add(1), "Too many references to same connection");
+                    self.0 = index + 1;
+                    return Some(Connection { index });
                 }
             }
             self.0 = CONNS_MAX as u8;
@@ -833,8 +867,10 @@ impl Iterator for ConnectionIter {
 impl FusedIterator for ConnectionIter {}
 
 // ConnectionStates by index.
+// UnsafeCell은 내부 가변성, SyncUnsafeCell은 배열 전체의 static 선언을 위한 Sync 래퍼.
 const DUMMY_STATE: UnsafeCell<ConnectionState> = UnsafeCell::new(ConnectionState::dummy());
-static mut STATES: [UnsafeCell<ConnectionState>; CONNS_MAX] = [DUMMY_STATE; CONNS_MAX];
+static STATES: SyncUnsafeCell<[UnsafeCell<ConnectionState>; CONNS_MAX]> =
+    SyncUnsafeCell::new([DUMMY_STATE; CONNS_MAX]);
 
 pub(crate) fn with_state_by_conn_handle<T>(conn_handle: u16, f: impl FnOnce(&mut ConnectionState) -> T) -> T {
     let index = unwrap!(
@@ -845,26 +881,30 @@ pub(crate) fn with_state_by_conn_handle<T>(conn_handle: u16, f: impl FnOnce(&mut
 }
 
 pub(crate) fn with_state<T>(index: u8, f: impl FnOnce(&mut ConnectionState) -> T) -> T {
-    let state = unsafe { &mut *STATES[index as usize].get() };
+    // SAFETY: Cortex-M4 single-core. SoftDevice 이벤트는 직렬화되어 호출됨.
+    let states = unsafe { &*STATES.get() };
+    let state = unsafe { &mut *states[index as usize].get() };
     f(state)
 }
 
 fn allocate_index<T>(f: impl FnOnce(u8, &mut ConnectionState) -> T) -> Result<T, OutOfConnsError> {
-    unsafe {
-        for (i, s) in (&*(&raw const STATES)).iter().enumerate() {
-            let state = &mut *s.get();
-            if state.refcount == 0 && !state.conn_handle.is_connected() {
-                return Ok(f(i as u8, state));
-            }
+    // SAFETY: 같은 이유로 단일 스레드 직렬 접근.
+    let states = unsafe { &*STATES.get() };
+    for (i, s) in states.iter().enumerate() {
+        let state = unsafe { &mut *s.get() };
+        if state.refcount == 0 && !state.conn_handle.is_connected() {
+            return Ok(f(i as u8, state));
         }
-        Err(OutOfConnsError)
     }
+    Err(OutOfConnsError)
 }
 
 // conn_handle -> index mapping. Used to make stuff go faster
 const INDEX_NONE: Cell<Option<u8>> = Cell::new(None);
-static mut INDEX_BY_HANDLE: [Cell<Option<u8>>; CONNS_MAX] = [INDEX_NONE; CONNS_MAX];
+static INDEX_BY_HANDLE: SyncUnsafeCell<[Cell<Option<u8>>; CONNS_MAX]> =
+    SyncUnsafeCell::new([INDEX_NONE; CONNS_MAX]);
 
 fn index_by_handle(conn_handle: u16) -> &'static Cell<Option<u8>> {
-    unsafe { &INDEX_BY_HANDLE[conn_handle as usize] }
+    // SAFETY: 단일 스레드 직렬 접근.
+    unsafe { &(*INDEX_BY_HANDLE.get())[conn_handle as usize] }
 }

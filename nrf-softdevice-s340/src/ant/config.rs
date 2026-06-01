@@ -166,14 +166,19 @@ pub unsafe fn sd_ant_event_filtering_get(filter: *mut u16) -> u32 {
 }
 
 /// Set coexistence config.
-/// SVC 248
+/// SVC 248. Both `pstCoexConfig` and `pstAdvCoexConfig` map to r1/r2 — pass
+/// `core::ptr::null_mut()` for unused slots (matches C's NULL).
 #[inline(always)]
-pub unsafe fn sd_ant_coex_config_set(channel: u8, config: *mut crate::ANT_BUFFER_PTR) -> u32 {
+pub unsafe fn sd_ant_coex_config_set(
+    channel: u8,
+    config: *mut crate::ANT_BUFFER_PTR,
+    adv_config: *mut crate::ANT_BUFFER_PTR,
+) -> u32 {
     let ret: u32;
     core::arch::asm!("svc 248",
         inout("r0") to_asm(channel) => ret,
         inout("r1") to_asm(config) => _,
-        lateout("r2") _,
+        inout("r2") to_asm(adv_config) => _,
         lateout("r3") _,
         lateout("r12") _,
     );
@@ -181,14 +186,19 @@ pub unsafe fn sd_ant_coex_config_set(channel: u8, config: *mut crate::ANT_BUFFER
 }
 
 /// Get coexistence config.
-/// SVC 249
+/// SVC 249. Both `pstCoexConfig` and `pstAdvCoexConfig` map to r1/r2 — pass
+/// `core::ptr::null_mut()` for unused slots (matches C's NULL).
 #[inline(always)]
-pub unsafe fn sd_ant_coex_config_get(channel: u8, config: *mut crate::ANT_BUFFER_PTR) -> u32 {
+pub unsafe fn sd_ant_coex_config_get(
+    channel: u8,
+    config: *mut crate::ANT_BUFFER_PTR,
+    adv_config: *mut crate::ANT_BUFFER_PTR,
+) -> u32 {
     let ret: u32;
     core::arch::asm!("svc 249",
         inout("r0") to_asm(channel) => ret,
         inout("r1") to_asm(config) => _,
-        lateout("r2") _,
+        inout("r2") to_asm(adv_config) => _,
         lateout("r3") _,
         lateout("r12") _,
     );
