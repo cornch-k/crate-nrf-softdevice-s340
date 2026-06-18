@@ -17,9 +17,9 @@ unsafe extern "C" fn fault_handler(id: u32, pc: u32, info: u32) {
     //
     // fault_handler 가 SD callback chain 안 — SP 가 SD local stack 깊이 가리킴.
     // user exception frame 은 그 위쪽 (higher address) 어딘가. 첫 32 word dump
-    // 해서 콘치님이 code 영역 (0x31000~0xAFFFF) 안 값 직접 식별.
+    // 해서 콘치님이 code 영역 (0x31000~0xDEFFF) 안 값 직접 식별.
     //
-    // 저장 채널: (1) RTT 발사 (cargo run live 시) (2) flash 0xB0000 (RTT 끊김 대비)
+    // 저장 채널: (1) RTT 발사 (cargo run live 시) (2) flash 0xDF000 (RTT 끊김 대비)
     // NVMC direct write — cortex_m::interrupt::disable 안 함 (SD timing 보호).
     // SD 가 이미 fault 상태라 NVMC 충돌 위험 낮음.
     let msp: u32;
@@ -36,9 +36,11 @@ unsafe extern "C" fn fault_handler(id: u32, pc: u32, info: u32) {
         }
     }
 
-    // ── flash 0xB0000 NVMC direct write ──────────────────────────
+    // ── flash 0xDF000 NVMC direct write ──────────────────────────
     // Layout: [magic, id, sd_pc, info, msp, psp, dump[0..32]]  총 38 words
-    const PANIC_FLASH_ADDR: u32 = 0xB_0000;
+    // 2026-06-18: app 용량 확보로 0xB0000 -> 0xDF000(스토리지 직전) 이동.
+    // app diag_panic.rs 의 PANIC_FLASH_ADDR 와 반드시 동일.
+    const PANIC_FLASH_ADDR: u32 = 0xDF000;
     const PANIC_FLASH_MAGIC: u32 = 0xDEAD_BEEF;
     const NVMC_READY: *const u32 = 0x4001_E400 as *const u32;
     const NVMC_CONFIG: *mut u32 = 0x4001_E504 as *mut u32;
@@ -71,7 +73,7 @@ unsafe extern "C" fn fault_handler(id: u32, pc: u32, info: u32) {
 
     // RTT 발사 — flash write 실패 시 fallback (RTT live 면 dump 직접 받음)
     defmt::error!(
-        "FAULT_HANDLER | sd_pc=0x{:08x} info=0x{:08x} msp=0x{:08x} psp=0x{:08x} (flash log @ 0xB0000)",
+        "FAULT_HANDLER | sd_pc=0x{:08x} info=0x{:08x} msp=0x{:08x} psp=0x{:08x} (flash log @ 0xDF000)",
         pc, info, msp, psp
     );
     defmt::error!(
@@ -157,7 +159,9 @@ fn get_app_ram_base() -> u32 {
     // 2026-05-20: APP_MEMACC fault 발생 — 동작 중 SD RAM 침범. +0x1000 추가.
     // 2026-05-20: +0x1000 도 부족, 동일 fault. +0x4000 은 .bss overflow.
     // +0x2000 (8KB) 추가하여 0x2000B788.
-    0x2000B788
+    // 2026-06-01: DFU 서비스 → vs_uuid_count 9→11(+2 슬롯). +0x400 → 0x2000BB88.
+    // memory.x RAM ORIGIN 과 반드시 일치.
+    0x2000BB88
 }
 
 fn cfg_set(id: u32, cfg: &raw::ble_cfg_t) {
