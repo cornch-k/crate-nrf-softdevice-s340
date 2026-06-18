@@ -187,3 +187,50 @@ pub fn uarte0_disable_for_boot() {
         w32(PSEL_RXD, PSEL_DISCONNECTED);
     }
 }
+
+// ─── LIN master raw helpers (UARTE0 TX=P0.22 / RX=P0.20) ─────────────
+//
+// nRF UARTE 에는 BREAK 전용 기능이 없다. baudrate 를 절반(9600)으로 낮춰 BREAK 를
+// 만드는 흔한 방법은 UARTE0 baudrate 가 TX/RX 공유라, 동시에 켜둔 RX 의 비트 샘플링까지
+// 깨져 슬레이브 응답을 못 받는다(0바이트). 그래서 baudrate 는 19200 으로 고정한 채 TX
+// 핀(P0.22)을 잠깐 UARTE PSEL 에서 떼어 GPIO 로 LOW 를 끌어 BREAK 를 만든다.
+// (lin_break_start → ~800us 대기 → lin_break_end.)
+//
+// 또한 embassy Uarte::new 는 RX 핀에 PULL 을 안 건다. LIN idle 은 recessive(HIGH)라 pull
+// 이 없으면 라인이 떠서 BREAK(LOW)만 간헐 검출되고 정상 바이트는 하나도 못 읽는다. split
+// 이후 RX 핀에 internal pull-up 을 덮어쓴다(pin_pull_up_keep).
+
+const CNF_PULL_UP: u32 = 3 << 2; // PIN_CNF bits 2..3 = 11
+const UARTE0_TX_PIN: u32 = 22; // P0.22 (LIN TX)
+
+/// LIN BREAK 시작: P0.22 를 UARTE0 PSEL.TXD 에서 떼어 GPIO LOW(high-drive)로 끈다.
+/// ~800us(≈15bit@19200, LIN break ≥13bit) 유지 후 lin_break_end(). baudrate 는 19200 고정.
+pub fn lin_break_start() {
+    unsafe {
+        w32(PSEL_TXD, PSEL_DISCONNECTED);
+        write_volatile((P0_BASE + OUTCLR_OFFSET) as *mut u32, 1 << UARTE0_TX_PIN);
+        write_volatile(
+            (P0_BASE + PIN_CNF_OFFSET + (UARTE0_TX_PIN as usize) * 4) as *mut u32,
+            CNF_DIR_OUTPUT | CNF_INPUT_DISCONNECT | CNF_DRIVE_H0H1,
+        );
+    }
+}
+
+/// LIN BREAK 끝: P0.22 HIGH(recessive) 후 UARTE0 PSEL.TXD 복구.
+pub fn lin_break_end() {
+    unsafe {
+        write_volatile((P0_BASE + OUTSET_OFFSET) as *mut u32, 1 << UARTE0_TX_PIN);
+        w32(PSEL_TXD, UARTE0_TX_PIN); // connect: bit31=0, port0, pin22
+    }
+}
+
+/// 핀에 internal pull-up 만 덮어쓴다(DIR/INPUT/DRIVE/PSEL 유지). split_with_idle 이후
+/// LIN RX 핀(P0.20)에 호출 → idle 이 HIGH 로 유지돼 정상 바이트 수신.
+pub fn pin_pull_up_keep(port: u8, pin: u8) {
+    let base = port_base(port);
+    unsafe {
+        let addr = (base + PIN_CNF_OFFSET + (pin as usize) * 4) as *mut u32;
+        let cur = read_volatile(addr);
+        write_volatile(addr, (cur & !(3 << 2)) | CNF_PULL_UP);
+    }
+}
